@@ -6,19 +6,17 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
-        origin: "*", // Allow requests from any frontend (like InfinityFree)
+        origin: "*", // In production, restrict this to your frontend's domain
         methods: ["GET", "POST"]
     }
 });
-
-// --- Core Chat Logic ---
 
 let waitingUser = null;
 
 io.on('connection', (socket) => {
     console.log(`User connected: ${socket.id}`);
 
-    // 1. Logic for finding a partner
+    // Logic for finding a partner
     socket.on('findPartner', () => {
         console.log(`User ${socket.id} is looking for a partner.`);
         socket.emit('status', 'Looking for a stranger...');
@@ -31,15 +29,19 @@ io.on('connection', (socket) => {
             socket.join(roomName);
             partner.join(roomName);
 
-            io.to(roomName).emit('chatStart', { message: "You are now connected to a stranger. Say hi!" });
             console.log(`Paired ${socket.id} and ${partner.id} in room ${roomName}`);
+            
+            // **IMPROVEMENT:** Explicitly tell the new user to be the initiator.
+            socket.emit('chatStart', { message: "You are now connected. Starting video...", initiator: true });
+            partner.emit('chatStart', { message: "You are now connected. Starting video...", initiator: false });
+
         } else {
             waitingUser = socket;
             socket.emit('status', 'Waiting for a stranger to connect...');
         }
     });
 
-    // 2. Message passing
+    // Handle text messages
     socket.on('sendMessage', (data) => {
         const room = findUserRoom(socket);
         if (room) {
@@ -47,7 +49,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 3. Typing indication
+    // Handle typing indicators
     socket.on('typing', () => {
         const room = findUserRoom(socket);
         if (room) {
@@ -55,12 +57,8 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 4. Manual leave
-    socket.on('leaveChat', () => {
-        handleDisconnect(socket);
-    });
-
-    // 5. WebRTC signaling
+    // --- WebRTC Signaling Relays ---
+    // The server just passes these messages between the two clients in a room.
     socket.on('webrtc-offer', (data) => {
         const room = findUserRoom(socket);
         if (room) {
@@ -82,7 +80,11 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 6. Handle disconnection
+    // Handle leaving a chat or disconnecting
+    socket.on('leaveChat', () => {
+        handleDisconnect(socket);
+    });
+
     socket.on('disconnect', () => {
         console.log(`User disconnected: ${socket.id}`);
         handleDisconnect(socket);
@@ -102,7 +104,10 @@ function handleDisconnect(socket) {
 
     const room = findUserRoom(socket);
     if (room) {
+        console.log(`User ${socket.id} left room ${room}`);
         socket.to(room).emit('chatEnd', { message: "Your partner has disconnected. Find a new chat?" });
+        
+        // Ensure the partner is also removed from the room state on the server
         const partnerSocketId = room.split('#').find(id => id !== socket.id);
         const partnerSocket = io.sockets.sockets.get(partnerSocketId);
         if (partnerSocket) {
